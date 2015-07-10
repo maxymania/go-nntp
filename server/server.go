@@ -298,6 +298,16 @@ func handleOver(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+
+/*
+   Indicating capability: OVER
+
+   Syntax
+     LIST OVERVIEW.FMT
+
+   Responses
+     215    Information follows (multi-line)
+*/
 func handleListOverviewFmt(dw io.Writer, c *textproto.Conn) error {
 	err := c.PrintfLine("215 list of newsgroups follows")
 	if err != nil {
@@ -310,9 +320,35 @@ Message-ID:
 References:
 :bytes
 :lines`)
+    //TODO: consider to use explicit "\r\n" or something
+    // This is NOT a performance critical function
 	return err
 }
 
+/*
+   Indicating capability: LIST
+
+   Syntax
+     LIST [keyword [wildmat|argument]]
+
+   Responses
+     215    Information follows (multi-line)
+
+   Parameters
+     keyword     Information requested [1]
+     argument    Specific to keyword
+     wildmat     Groups of interest
+
+   [1] If no keyword is provided, it defaults to ACTIVE.
+
+   Example of LIST with the ACTIVE keyword and wildmat:
+
+      [C] LIST ACTIVE misc.*
+      [S] 215 list of newsgroups follows
+      [S] misc.test 3002322 3000234 y
+      [S] .
+
+*/
 func handleList(args []string, s *session, c *textproto.Conn) error {
 	ltype := "active"
 	var wildmat *WildMat
@@ -356,6 +392,28 @@ func handleList(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+/*
+   Indicating capability: READER
+
+   Syntax
+     NEWGROUPS date time [GMT]
+
+   Responses
+     231    List of new newsgroups follows (multi-line)
+
+   Parameters
+     date    Date in yymmdd or yyyymmdd format
+     time    Time in hhmmss format
+
+   >>Description<<
+
+   This command returns a list of newsgroups created on the server since
+   the specified date and time. The results are in the same format as
+   the LIST ACTIVE command (see Section 7.6.3).  However, they MAY
+   include groups not available on the server (and so not returned by
+   LIST ACTIVE) and MAY omit groups for which the creation date is not
+   available.
+*/
 func handleNewGroups(args []string, s *session, c *textproto.Conn) error {
 	c.PrintfLine("231 list of newsgroups follows")
 	c.PrintfLine(".")
@@ -371,6 +429,22 @@ func handleQuit(args []string, s *session, c *textproto.Conn) error {
 	return io.EOF
 }
 
+/*
+   Indicating capability: READER
+
+   Syntax
+     GROUP group
+
+   Responses
+     211 number low high group     Group successfully selected
+     411                           No such newsgroup
+
+   Parameters
+     group     Name of newsgroup
+     number    Estimated number of articles in the group
+     low       Reported low water mark
+     high      Reported high water mark
+*/
 func handleGroup(args []string, s *session, c *textproto.Conn) error {
 	if len(args) < 1 {
 		return ErrNoSuchGroup
@@ -388,6 +462,7 @@ func handleGroup(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+// internal
 func (s *session) getArticle(args []string) (*nntp.Article, error) {
 	if s.group == nil {
 		return s.backend.GetArticleWithNoGroup(args[0])
@@ -501,7 +576,6 @@ func handleBody(args []string, s *session, c *textproto.Conn) error {
      n             Returned article number
      message-id    Article message-id
 */
-
 func handleArticle(args []string, s *session, c *textproto.Conn) error {
 	article, err := s.getArticle(args)
 	if err != nil {
@@ -524,6 +598,10 @@ func handleArticle(args []string, s *session, c *textproto.Conn) error {
 }
 
 /*
+   Indicating capability: POST
+
+   This command MUST NOT be pipelined.
+
    Syntax
      POST
 
@@ -537,7 +615,6 @@ func handleArticle(args []string, s *session, c *textproto.Conn) error {
      240    Article received OK
      441    Posting failed
 */
-
 func handlePost(args []string, s *session, c *textproto.Conn) error {
 	if !s.backend.AllowPost() {
 		return ErrPostingNotPermitted
@@ -565,6 +642,31 @@ func handlePost(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+/*
+
+   Indicating capability: IHAVE
+
+   This command MUST NOT be pipelined.
+
+   Syntax
+     IHAVE message-id
+
+   Responses
+
+   Initial responses
+     335    Send article to be transferred
+     435    Article not wanted
+     436    Transfer not possible; try again later
+
+   Subsequent responses
+     235    Article transferred OK
+     436    Transfer failed; try again later
+     437    Transfer rejected; do not retry
+
+   Parameters
+     message-id    Article message-id
+
+*/
 func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	if !s.backend.AllowPost() {
 		return ErrNotWanted
@@ -580,7 +682,7 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	article = &nntp.Article{}
 	article.Header, err = c.ReadMIMEHeader()
 	if err != nil {
-		return ErrPostingFailed
+		return ErrPostingFailed // FIXME: sends "441 Posting failed" instead of "436 Transfer failed; try again later"
 	}
 	article.Body = c.DotReader()
 	err = s.backend.Post(article)
@@ -617,7 +719,40 @@ func handleMode(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+/*
+ Documented outside RFC 3977 --> RFC 4643
+
+   Example of successful AUTHINFO USER:
+
+      [C] AUTHINFO USER wilma
+      [S] 281 Authentication accepted
+
+   Example of successful AUTHINFO USER/PASS:
+
+      [C] AUTHINFO USER fred
+      [S] 381 Enter passphrase
+      [C] AUTHINFO PASS flintstone
+      [S] 281 Authentication accepted
+
+   Example of AUTHINFO USER/PASS requiring a security layer:
+
+      [C] AUTHINFO USER fred@stonecanyon.example.com
+      [S] 483 Encryption or stronger authentication required
+
+   Example of failed AUTHINFO USER/PASS:
+
+      [C] AUTHINFO USER barney
+      [S] 381 Enter passphrase
+      [C] AUTHINFO PASS flintstone
+      [S] 481 Authentication failed
+
+   Example of AUTHINFO PASS before AUTHINFO USER:
+
+      [C] AUTHINFO PASS flintstone
+      [S] 482 Authentication commands issued out of sequence
+*/
 func handleAuthInfo(args []string, s *session, c *textproto.Conn) error {
+	// FIXME: error messages!!!!
 	if len(args) < 2 {
 		return ErrSyntax
 	}
@@ -644,3 +779,5 @@ func handleAuthInfo(args []string, s *session, c *textproto.Conn) error {
 	}
 	return err
 }
+
+
