@@ -82,9 +82,16 @@ var ErrPostingNotPermitted = &NNTPError{440, "Posting not permitted"}
 // ErrPostingFailed is returned when an attempt to post an article fails.
 var ErrPostingFailed = &NNTPError{441, "posting failed"}
 
-// ErrNotWanted is returned when an attempt to post an article is
+// ErrNotWanted is returned when an attempt to ihave an article is
 // rejected due the server not wanting the article.
 var ErrNotWanted = &NNTPError{435, "Article not wanted"}
+
+// ErrIHaveFailed is returned when an attempt to ihave an article fails.
+var ErrIHaveFailed = &NNTPError{436, "Transfer failed; try again later"}
+
+// ErrIHaveRejected is returned when an attempt to ihave an article is
+// rejected due the server not wanting the article.
+var ErrIHaveRejected = &NNTPError{437, "Transfer rejected; do not retry"}
 
 // ErrAuthRequired is returned to indicate authentication is required
 // to proceed.
@@ -857,8 +864,9 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 		return ErrNotWanted
 	}
 
-	// XXX:  See if we have it.
-	article, err := s.backend.GetArticle(nil, args[0])
+	// See if we have it.
+	// TODO: special method?
+	article, err := s.backend.GetArticleWithNoGroup(args[0])
 	if article != nil {
 		return ErrNotWanted
 	}
@@ -867,11 +875,12 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	article = &nntp.Article{}
 	article.Header, err = c.ReadMIMEHeader()
 	if err != nil {
-		return ErrPostingFailed // FIXME: sends "441 Posting failed" instead of "436 Transfer failed; try again later"
+		return ErrIHaveFailed
 	}
 	article.Body = c.DotReader()
 	err = s.backend.Post(article)
 	if err != nil {
+		if err==ErrPostingFailed { err = ErrIHaveFailed }
 		return err
 	}
 	c.PrintfLine("235 article received OK")
@@ -968,7 +977,6 @@ func handleMode(args []string, s *session, c *textproto.Conn) error {
       [S] 482 Authentication commands issued out of sequence
 */
 func handleAuthInfo(args []string, s *session, c *textproto.Conn) error {
-	// FIXME: error messages!!!!
 	if len(args) < 2 {
 		return ErrSyntax
 	}
