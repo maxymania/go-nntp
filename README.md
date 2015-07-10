@@ -1,5 +1,7 @@
 # go-nntp
-NNTP client and server for the go language. Based/Extended from https://github.com/dustin/go-nntp
+NNTP ~~client and~~ server for the go language. Based/Extended from https://github.com/dustin/go-nntp
+
+The client code is not actively developed and considered cruft (for now).
 
 # Goals
 
