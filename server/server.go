@@ -38,6 +38,7 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maxymania/go-nntp"
 )
@@ -64,6 +65,9 @@ var ErrInvalidArticleNumber = &NNTPError{423, "No article with that number"}
 // ErrNoCurrentArticle is returned when a command is executed that
 // requires a current article when one has not been selected.
 var ErrNoCurrentArticle = &NNTPError{420, "Current article number is invalid"}
+
+// ErrNoPreviousArticle is returned when LAST or NEXT reaches the end of its iteration
+var ErrNoPreviousArticle = &NNTPError{421, "No previous article to retrieve"}
 
 // ErrUnknownCommand is returned for unknown comands.
 var ErrUnknownCommand = &NNTPError{500, "Unknown command"}
@@ -132,6 +136,7 @@ type session struct {
 	backend     Backend
 	idGenerator IdGenerator
 	group       *nntp.Group
+	number		int64
 }
 
 // The Server handle.
@@ -168,6 +173,12 @@ func NewServer(backend Backend,idGenerator IdGenerator) *Server {
 	rv.Handlers["newgroups"] = handleNewGroups
 	rv.Handlers["over"] = handleOver
 	rv.Handlers["xover"] = handleOver
+	rv.Handlers["listgroup"] = handleListgroup
+	rv.Handlers["last"] = handleLast
+	rv.Handlers["next"] = handleNext
+	rv.Handlers["stat"] = handleStat
+	rv.Handlers["help"] = handleHelp
+	rv.Handlers["date"] = handleDate
 	return &rv
 }
 
@@ -205,6 +216,7 @@ func (s *Server) Process(tc net.Conn) {
 		backend:     backend,
 		idGenerator: s.IdGenerator,
 		group:       nil,
+		number:      0,
 	}
 
 	c.PrintfLine("200 Hello!")
@@ -262,6 +274,66 @@ func parseRange(spec string) (low, high int64) {
 }
 
 /*
+   Indicating capability: READER
+
+   Syntax
+     LISTGROUP [group [range]]
+
+   Responses
+     211 number low high group     Article numbers follow (multi-line)
+     411                           No such newsgroup
+     412                           No newsgroup selected [1]
+
+   Parameters
+     group     Name of newsgroup
+     range     Range of articles to report
+     number    Estimated number of articles in the group
+     low       Reported low water mark
+     high      Reported high water mark
+
+   [1] The 412 response can only occur if no group has been specified.
+*/
+func handleListgroup(args []string, s *session, c *textproto.Conn) error {
+	grp := s.group
+	arg0 := ""
+	arg1 := ""
+	if len(args)>0 {arg0 = args[0]}
+	if len(args)>1 {arg1 = args[1]}
+	if arg0!="" {
+		ok := false
+		if grp!=nil { ok = grp.Name==arg0 }
+		if grp==nil || !ok {
+			var err error
+			grp, err = s.backend.GetGroup(args[0])
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if grp==nil { return ErrNoGroupSelected }
+
+	from, to := parseRange(arg1)
+	articles, err := s.backend.GetArticles(grp, from, to)
+	if err != nil {
+		return err
+	}
+
+	num := (grp.High-grp.Low)+1
+	if to<grp.High { num -= grp.High-to }
+	if from>grp.Low { num -= from-grp.Low }
+
+	c.PrintfLine("211 %d %d %d %s",num,grp.Low,grp.High,grp.Name)
+	dw := c.DotWriter()
+	defer dw.Close()
+	for a := range articles {
+		fmt.Fprintf(dw, "%d\n", a.Num)
+	}
+	return nil
+}
+
+
+
+/*
    "0" or article number (see below)
    Subject header content
    From header content
@@ -298,7 +370,6 @@ func handleOver(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
-
 /*
    Indicating capability: OVER
 
@@ -313,16 +384,16 @@ func handleListOverviewFmt(dw io.Writer, c *textproto.Conn) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(dw, `Subject:
-From:
-Date:
-Message-ID:
-References:
-:bytes
-:lines`)
-    //TODO: consider to use explicit "\r\n" or something
-    // This is NOT a performance critical function
-	return err
+	// This is NOT a performance critical function
+	_, err = fmt.Fprintln(dw, "Subject:"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, "From:"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, "Date:"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, "Message-ID:"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, "References:"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, ":bytes"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, ":lines"); if err!=nil { return err }
+    
+	return nil
 }
 
 /*
@@ -456,14 +527,130 @@ func handleGroup(args []string, s *session, c *textproto.Conn) error {
 	}
 
 	s.group = group
+	s.number = group.Low
 
 	c.PrintfLine("211 %d %d %d %s",
 		group.Count, group.Low, group.High, group.Name)
 	return nil
 }
 
+/*
+   Indicating capability: READER
+
+   Syntax
+     LAST
+
+   Responses
+     223 n message-id    Article found
+     412                 No newsgroup selected
+     420                 Current article number is invalid
+     422                 No previous article in this group
+
+   Parameters
+     n             Article number
+     message-id    Article message-id
+*/
+func handleLast(args []string, s *session, c *textproto.Conn) error {
+	if s.group == nil {
+		return ErrNoGroupSelected
+	}
+	s.number = s.group.Low
+	for s.group.High>=s.number {
+		a,_ := s.backend.GetArticle(s.group,fmt.Sprint(s.number))
+		s.number++
+		if a!=nil {
+			c.PrintfLine("211 %d %s",s.number-1,a.MessageID())
+			return nil
+		}
+	}
+	c.PrintfLine("422 No previous article to retrieve")
+	return nil
+}
+
+/*
+   Indicating capability: READER
+
+   Syntax
+     NEXT
+
+   Responses
+     223 n message-id    Article found
+     412                 No newsgroup selected
+     420                 Current article number is invalid
+     421                 No next article in this group
+
+   Parameters
+     n             Article number
+     message-id    Article message-id
+*/
+func handleNext(args []string, s *session, c *textproto.Conn) error {
+	if s.group == nil {
+		return ErrNoGroupSelected
+	}
+	if s.number<s.group.Low {
+		return ErrNoCurrentArticle
+	}
+	for s.group.High>=s.number {
+		a,_ := s.backend.GetArticle(s.group,fmt.Sprint(s.number))
+		s.number++
+		if a!=nil {
+			c.PrintfLine("223 %d %s",s.number-1,a.MessageID())
+			return nil
+		}
+	}
+	//c.PrintfLine("421 No previous article to retrieve")
+	return ErrNoPreviousArticle
+}
+
+/*
+   Syntax
+     STAT message-id
+     STAT number
+     STAT
+
+   Responses
+
+   First form (message-id specified)
+     223 0|n message-id    Article exists
+     430                   No article with that message-id
+
+   Second form (article number specified)
+     223 n message-id      Article exists
+     412                   No newsgroup selected
+     423                   No article with that number
+
+   Third form (current article number used)
+     223 n message-id      Article exists
+     412                   No newsgroup selected
+     420                   Current article number is invalid
+
+   Parameters
+     number        Requested article number
+     n             Returned article number
+     message-id    Article message-id
+
+*/
+func handleStat(args []string, s *session, c *textproto.Conn) error {
+	article, err := s.getArticle(args)
+	if err != nil {
+		return err
+	}
+	c.PrintfLine("223 1 %s", article.MessageID())
+	return nil
+}
+
+
 // internal
 func (s *session) getArticle(args []string) (*nntp.Article, error) {
+	if len(args)==0{
+		if s.group == nil {
+			return nil, ErrNoGroupSelected
+		}
+		if s.number<0 || s.number>s.group.High {
+			return nil,ErrNoCurrentArticle
+		}
+		return s.backend.GetArticle(s.group, fmt.Sprint(s.number-1))
+	}
 	if s.group == nil {
 		return s.backend.GetArticleWithNoGroup(args[0])
 		// return nil, ErrNoGroupSelected
@@ -492,7 +679,6 @@ func (s *session) getArticle(args []string) (*nntp.Article, error) {
      412                   No newsgroup selected
      420                   Current article number is invalid
 */
-
 func handleHead(args []string, s *session, c *textproto.Conn) error {
 	article, err := s.getArticle(args)
 	if err != nil {
@@ -536,7 +722,6 @@ func handleHead(args []string, s *session, c *textproto.Conn) error {
      n             Returned article number
      message-id    Article message-id
 */
-
 func handleBody(args []string, s *session, c *textproto.Conn) error {
 	article, err := s.getArticle(args)
 	if err != nil {
@@ -693,6 +878,37 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+
+/*
+   Syntax
+     HELP
+
+   Responses
+     100    Help text follows (multi-line)
+*/
+func handleHelp(args []string, s *session, c *textproto.Conn) error {
+	c.PrintfLine("100 Help text follows (multi-line)")
+	c.PrintfLine(".")
+	return nil
+}
+
+/*
+   Indicating capability: READER
+
+   Syntax
+     DATE
+
+   Responses
+     111 yyyymmddhhmmss    Server date and time
+*/
+func handleDate(args []string, s *session, c *textproto.Conn) error {
+	t := time.Now()
+	Y,M,D := t.Date()
+	h,m,z := t.Clock()
+	c.PrintfLine("111 %04d%02d%02d%02d%02d%02d",Y,int(M),D,h,m,z)
+	return nil
+}
+
 func handleCap(args []string, s *session, c *textproto.Conn) error {
 	c.PrintfLine("101 Capability list:")
 	dw := c.DotWriter()
@@ -757,6 +973,9 @@ func handleAuthInfo(args []string, s *session, c *textproto.Conn) error {
 		return ErrSyntax
 	}
 	if strings.ToLower(args[0]) != "user" {
+		if strings.ToLower(args[0]) == "pass" {
+			return c.PrintfLine("482 Authentication commands issued out of sequence")
+		}
 		return ErrSyntax
 	}
 
