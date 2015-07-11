@@ -66,8 +66,11 @@ var ErrInvalidArticleNumber = &NNTPError{423, "No article with that number"}
 // requires a current article when one has not been selected.
 var ErrNoCurrentArticle = &NNTPError{420, "Current article number is invalid"}
 
+// ErrNoNextArticle is returned when LAST or NEXT reaches the end of its iteration
+var ErrNoNextArticle = &NNTPError{421, "No next article to retrieve"}
+
 // ErrNoPreviousArticle is returned when LAST or NEXT reaches the end of its iteration
-var ErrNoPreviousArticle = &NNTPError{421, "No previous article to retrieve"}
+var ErrNoPreviousArticle = &NNTPError{422, "No previous article to retrieve"}
 
 // ErrUnknownCommand is returned for unknown comands.
 var ErrUnknownCommand = &NNTPError{500, "Unknown command"}
@@ -325,11 +328,7 @@ func handleListgroup(args []string, s *session, c *textproto.Conn) error {
 		return err
 	}
 
-	num := (grp.High-grp.Low)+1
-	if to<grp.High { num -= grp.High-to }
-	if from>grp.Low { num -= from-grp.Low }
-
-	c.PrintfLine("211 %d %d %d %s",num,grp.Low,grp.High,grp.Name)
+	c.PrintfLine("211 %d %d %d %s",grp.Count,grp.Low,grp.High,grp.Name)
 	dw := c.DotWriter()
 	defer dw.Close()
 	for a := range articles {
@@ -522,6 +521,7 @@ func handleQuit(args []string, s *session, c *textproto.Conn) error {
      number    Estimated number of articles in the group
      low       Reported low water mark
      high      Reported high water mark
+
 */
 func handleGroup(args []string, s *session, c *textproto.Conn) error {
 	if len(args) < 1 {
@@ -534,7 +534,7 @@ func handleGroup(args []string, s *session, c *textproto.Conn) error {
 	}
 
 	s.group = group
-	s.number = group.Low
+	s.number = -1
 
 	c.PrintfLine("211 %d %d %d %s",
 		group.Count, group.Low, group.High, group.Name)
@@ -556,22 +556,25 @@ func handleGroup(args []string, s *session, c *textproto.Conn) error {
    Parameters
      n             Article number
      message-id    Article message-id
+
+Moves the current article pointer to the previous article.
 */
 func handleLast(args []string, s *session, c *textproto.Conn) error {
 	if s.group == nil {
 		return ErrNoGroupSelected
 	}
-	s.number = s.group.Low
-	for s.group.High>=s.number {
+	if s.number<0 {
+		s.number = s.group.High+1
+	}
+	for s.group.Low<=s.number {
+		s.number--
 		a,_ := s.backend.GetArticle(s.group,fmt.Sprint(s.number))
-		s.number++
 		if a!=nil {
-			c.PrintfLine("211 %d %s",s.number-1,a.MessageID())
+			c.PrintfLine("223 %d %s",s.number,a.MessageID())
 			return nil
 		}
 	}
-	c.PrintfLine("422 No previous article to retrieve")
-	return nil
+	return ErrNoPreviousArticle
 }
 
 /*
@@ -589,24 +592,25 @@ func handleLast(args []string, s *session, c *textproto.Conn) error {
    Parameters
      n             Article number
      message-id    Article message-id
+
+Moves the current article pointer to the next article.
 */
 func handleNext(args []string, s *session, c *textproto.Conn) error {
 	if s.group == nil {
 		return ErrNoGroupSelected
 	}
-	if s.number<s.group.Low {
-		return ErrNoCurrentArticle
+	if s.number<0 {
+		s.number = s.group.Low-1
 	}
-	for s.group.High>=s.number {
-		a,_ := s.backend.GetArticle(s.group,fmt.Sprint(s.number))
+	for s.number<=s.group.High {
 		s.number++
+		a,_ := s.backend.GetArticle(s.group,fmt.Sprint(s.number))		
 		if a!=nil {
-			c.PrintfLine("223 %d %s",s.number-1,a.MessageID())
+			c.PrintfLine("223 %d %s",s.number,a.MessageID())
 			return nil
 		}
 	}
-	//c.PrintfLine("421 No previous article to retrieve")
-	return ErrNoPreviousArticle
+	return ErrNoNextArticle
 }
 
 /*
@@ -636,11 +640,16 @@ func handleNext(args []string, s *session, c *textproto.Conn) error {
      n             Returned article number
      message-id    Article message-id
 
+If a article number is passed, the server should set the "current article pointer" to it.
 */
 func handleStat(args []string, s *session, c *textproto.Conn) error {
 	article, err := s.getArticle(args)
 	if err != nil {
 		return err
+	}
+	if len(args)>0 {
+		n,ok := articleIDOrNumber(args[0])
+		if ok { s.number = n }
 	}
 	c.PrintfLine("223 1 %s", article.MessageID())
 	return nil
@@ -656,7 +665,7 @@ func (s *session) getArticle(args []string) (*nntp.Article, error) {
 		if s.number<0 || s.number>s.group.High {
 			return nil,ErrNoCurrentArticle
 		}
-		return s.backend.GetArticle(s.group, fmt.Sprint(s.number-1))
+		return s.backend.GetArticle(s.group, fmt.Sprint(s.number))
 	}
 	if s.group == nil {
 		return s.backend.GetArticleWithNoGroup(args[0])
