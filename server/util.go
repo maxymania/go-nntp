@@ -28,6 +28,8 @@ func articleIDOrNumber(id string) (int64,bool) {
 	return i,e==nil
 }
 
+// Distinguishes between an Article-ID and an Article Number
+// using the syntax of the id-String.
 func ArticleIDOrNumber(id string) (int64,bool) {
 	return articleIDOrNumber(id)
 }
