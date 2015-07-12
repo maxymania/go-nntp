@@ -4,6 +4,15 @@ import "strconv"
 import "strings"
 import "net/textproto"
 
+var headerCorrection = map[string]string{
+	"Message-Id":"Message-ID",
+}
+func correctHeader(h string) string {
+	h2,ok := headerCorrection[h]
+	if ok { return h2 }
+	return h
+}
+
 func analiyzeArticleID(id string) (single bool,nogroup bool) {
 	if len(id)==0 { return false,false }
 	if id[0]=='<' { return true,true }

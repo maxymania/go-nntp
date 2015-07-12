@@ -911,8 +911,9 @@ func handleHead(args []string, s *session, c *textproto.Conn) error {
 	dw := c.DotWriter()
 	defer dw.Close()
 	for k, v := range article.Header {
+		kk := correctHeader(k)
 		for _,vv := range v {
-			fmt.Fprintf(dw, "%s: %s\r\n", k, vv)
+			fmt.Fprintf(dw, "%s: %s\r\n", kk, vv)
 		}
 	}
 	return nil
@@ -994,8 +995,9 @@ func handleArticle(args []string, s *session, c *textproto.Conn) error {
 	defer dw.Close()
 
 	for k, v := range article.Header {
+		kk := correctHeader(k)
 		for _,vv := range v {
-			fmt.Fprintf(dw, "%s: %s\r\n", k, vv)
+			fmt.Fprintf(dw, "%s: %s\r\n", kk, vv)
 		}
 	}
 
