@@ -473,7 +473,7 @@ func handleOver(args []string, s *session, c *textproto.Conn) error {
      215    Information follows (multi-line)
 */
 func handleListOverviewFmt(dw io.Writer, c *textproto.Conn) error {
-	err := c.PrintfLine("215 list of newsgroups follows")
+	err := c.PrintfLine("215 Information follows")
 	if err != nil {
 		return err
 	}
@@ -576,6 +576,31 @@ func handleHdr(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+/*
+   Indicating capability: HDR
+
+   Syntax
+     LIST HEADERS [MSGID|RANGE]
+
+   Responses
+     215    Field list follows (multi-line)
+
+   Parameters
+     MSGID    Requests list for access by message-id
+     RANGE    Requests list for access by range
+*/
+func handleListHeaders(dw io.Writer, c *textproto.Conn) error {
+	err := c.PrintfLine("215 Field list follows")
+	if err != nil {
+		return err
+	}
+	// This is NOT a performance critical function
+	_, err = fmt.Fprintln(dw, ":"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, ":bytes"); if err!=nil { return err }
+	_, err = fmt.Fprintln(dw, ":lines"); if err!=nil { return err }
+	return nil
+}
+
 
 /*
    Indicating capability: LIST
@@ -613,6 +638,10 @@ func handleList(args []string, s *session, c *textproto.Conn) error {
 		dw := c.DotWriter()
 		defer dw.Close()
 		return handleListOverviewFmt(dw, c)
+	} else if ltype=="headers" {
+		dw := c.DotWriter()
+		defer dw.Close()
+		return handleListHeaders(dw, c)
 	}
 	
 	if len(args) > 1 {
@@ -1138,7 +1167,9 @@ func handleCap(args []string, s *session, c *textproto.Conn) error {
 	}
 	fmt.Fprintf(dw, "OVER\n")
 	fmt.Fprintf(dw, "XOVER\n")
-	fmt.Fprintf(dw, "LIST ACTIVE NEWSGROUPS OVERVIEW.FMT\n")
+	fmt.Fprintf(dw, "HDR\n")
+	fmt.Fprintf(dw, "XHDR\n")
+	fmt.Fprintf(dw, "LIST ACTIVE NEWSGROUPS HEADER OVERVIEW.FMT\n")
 	return nil
 }
 
