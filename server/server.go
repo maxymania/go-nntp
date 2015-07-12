@@ -23,6 +23,9 @@
  * SOFTWARE.
  *
  * <http://www.opensource.org/licenses/mit-license.php>
+ *
+ *
+ * RFC Snippets inside some comments: Copyright (C) The Internet Society (2006).
  */
 
 
