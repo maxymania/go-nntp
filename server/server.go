@@ -35,6 +35,7 @@ package nntpserver
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"math"
 	"net"
@@ -217,6 +218,8 @@ func NewServer(backend Backend,idGenerator IdGenerator) *Server {
 	rv.Handlers["article"] = handleArticle
 	rv.Handlers["post"] = handlePost
 	rv.Handlers["ihave"] = handleIHave
+	rv.Handlers["check"] = handleCheck
+	rv.Handlers["takethis"] = handleTakethis
 	rv.Handlers["capabilities"] = handleCap
 	rv.Handlers["mode"] = handleMode
 	rv.Handlers["authinfo"] = handleAuthInfo
@@ -1131,6 +1134,124 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	return c.PrintfLine("235 article received OK")
 }
 
+/*
+  Command from RFC-4644
+
+  Syntax
+      CHECK message-id
+
+   Responses
+      238 message-id   Send article to be transferred
+      431 message-id   Transfer not possible; try again later
+      438 message-id   Article not wanted
+
+   Parameters
+      message-id = Article message-id
+*/
+func handleCheck(args []string, s *session, c *textproto.Conn) error {
+	if len(args)<1 {
+		return ErrSyntax
+	}
+	if !s.backend.AllowPost() {
+		return c.PrintfLine("438 %s",args[0])
+	}
+	var article *nntp.Article
+	var err error
+
+	if s.beIhave!=nil { goto way_use_beIhave }
+
+	// See if we have it.
+	article, err = s.backend.GetArticleWithNoGroup(args[0])
+	if article != nil {
+		return c.PrintfLine("438 %s",args[0])
+	}
+
+	return c.PrintfLine("238 %s",args[0])
+	
+	way_use_beIhave:
+	
+	// See if we have it.
+	err = s.beIhave.IHaveWantArticle(args[0])
+	if err != nil {
+		return c.PrintfLine("438 %s",args[0])
+	}
+
+	return c.PrintfLine("238 %s",args[0])
+}
+
+/*
+  Command from RFC-4644
+
+  Syntax
+      TAKETHIS message-id
+
+   Responses
+      239 message-id   Article transferred OK
+      439 message-id   Transfer rejected; do not retry
+
+   Parameters
+      message-id = Article message-id
+
+*/
+func handleTakethis(args []string, s *session, c *textproto.Conn) error {	
+	if len(args)<1 {
+		io.Copy(ioutil.Discard, c.DotReader())
+		return c.PrintfLine("501 unknown syntax")
+	}
+	if !s.backend.AllowPost() {
+		io.Copy(ioutil.Discard, c.DotReader())
+		return c.PrintfLine("439 %s",args[0])
+	}
+	var article *nntp.Article
+	var err error
+
+	if s.beIhave!=nil { goto way_use_beIhave }
+
+	// See if we have it.
+	article, err = s.backend.GetArticleWithNoGroup(args[0])
+	if article != nil {
+		io.Copy(ioutil.Discard, c.DotReader())
+		return c.PrintfLine("439 %s",args[0])
+	}
+
+	c.PrintfLine("335 send it")
+	article = &nntp.Article{}
+	article.Header, err = c.ReadMIMEHeader()
+	if err != nil {
+		io.Copy(ioutil.Discard, c.DotReader())
+		return c.PrintfLine("439 %s",args[0])
+	}
+	article.Body = c.DotReader()
+	err = s.backend.Post(article)
+	if err != nil {
+		io.Copy(ioutil.Discard, article.Body)
+		return c.PrintfLine("439 %s",args[0])
+	}
+	return c.PrintfLine("239 %s",args[0])
+	
+	way_use_beIhave:
+	
+	// See if we have it.
+	err = s.beIhave.IHaveWantArticle(args[0])
+	if err != nil {
+		io.Copy(ioutil.Discard, c.DotReader())
+		return c.PrintfLine("439 %s",args[0])
+	}
+
+	article = &nntp.Article{}
+	article.Header, err = c.ReadMIMEHeader()
+	if err != nil {
+		io.Copy(ioutil.Discard, c.DotReader())
+		return c.PrintfLine("439 %s",args[0])
+	}
+	article.Body = c.DotReader()
+	err = s.beIhave.IHave(args[0],article)
+	if err != nil {
+		io.Copy(ioutil.Discard, article.Body)
+		return c.PrintfLine("439 %s",args[0])
+	}
+	return c.PrintfLine("239 %s",args[0])
+}
 
 /*
    Syntax
@@ -1169,6 +1290,7 @@ func handleCap(args []string, s *session, c *textproto.Conn) error {
 
 	fmt.Fprintf(dw, "VERSION 2\n")
 	fmt.Fprintf(dw, "READER\n")
+	fmt.Fprintf(dw, "STREAMING\n")
 	if s.backend.AllowPost() {
 		fmt.Fprintf(dw, "POST\n")
 		fmt.Fprintf(dw, "IHAVE\n")
@@ -1181,11 +1303,44 @@ func handleCap(args []string, s *session, c *textproto.Conn) error {
 	return nil
 }
 
+/*
+   Indicating capability: MODE-READER
+
+   This command MUST NOT be pipelined.
+
+   Syntax
+     MODE READER
+
+   Responses
+     200    Posting allowed
+     201    Posting prohibited
+     502    Reading service permanently unavailable [1]
+
+   [1] Following a 502 response the server MUST immediately close the
+       connection.
+
+   From RFC-4644:
+
+   Syntax
+      MODE STREAM
+
+   Responses
+      203   Streaming permitted
+*/
 func handleMode(args []string, s *session, c *textproto.Conn) error {
-	if s.backend.AllowPost() {
-		c.PrintfLine("200 Posting allowed")
-	} else {
-		c.PrintfLine("201 Posting prohibited")
+	arg0 := "reader"
+	if len(args)>0 { arg0=strings.ToLower(args[0]) }
+	switch arg0 {
+	case "stream":
+		c.PrintfLine("203 Streaming permitted")
+	case "reader":
+		fallthrough
+	default:
+		if s.backend.AllowPost() {
+			c.PrintfLine("200 Posting allowed")
+		} else {
+			c.PrintfLine("201 Posting prohibited")
+		}
 	}
 	return nil
 }
