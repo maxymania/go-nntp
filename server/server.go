@@ -129,7 +129,7 @@ type NumberedArticle struct {
 // The Backend that provides the things and does the stuff.
 type Backend interface {
 	// ListGroups(max int) ([]*nntp.Group, error)
-	ListGroups(max int) (<- chan *nntp.Group, error)
+	ListGroups() (<- chan *nntp.Group, error)
 	GetGroup(name string) (*nntp.Group, error)
 	// DONE: Add a way for Article Downloading without group select
 	// if not to implement DO: return nil, ErrNoGroupSelected
@@ -655,7 +655,7 @@ func handleList(args []string, s *session, c *textproto.Conn) error {
 		if e!=nil { return ErrSyntax }
 	}
 	
-	groups, err := s.backend.ListGroups(-1)
+	groups, err := s.backend.ListGroups()
 	if err != nil {
 		return err
 	}
