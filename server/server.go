@@ -128,7 +128,7 @@ type NumberedArticle struct {
 
 // The Backend that provides the things and does the stuff.
 type Backend interface {
-	// ListGroups(max int) ([]*nntp.Group, error)
+	// gets a list of NNTP newsgroups.
 	ListGroups() (<- chan *nntp.Group, error)
 	GetGroup(name string) (*nntp.Group, error)
 	// DONE: Add a way for Article Downloading without group select
@@ -172,6 +172,20 @@ type BackendIHave interface {
 	IHaveWantArticle(id string) error
 }
 
+
+// An optional Interface Backend-objects may provide.
+//
+// This interface provides an alternative version of "ListGroups"
+// which gives the Backend developer the opportunity to improve
+// both performance and efficiency of the LIST ACTIVE/LIST NEWSGROUPS
+// command.
+type BackendListWildMat interface {
+	// This function will be called instead of ListGroups, if the
+	// WildMat parameter is given. The implementor must return at
+	// least all groups, that matches the given pattern.
+	ListGroupsWildMat(pattern *WildMat) (<- chan *nntp.Group, error)
+}
+
 type IdGenerator interface {
 	GenID() string
 }
@@ -183,10 +197,12 @@ type session struct {
 	group       *nntp.Group
 	number		int64
 	beIhave     BackendIHave
+	beWildMat   BackendListWildMat
 }
 func (s *session) setBackend(backend Backend){
-	s.backend   = backend
-	s.beIhave,_ = backend.(BackendIHave)
+	s.backend     = backend
+	s.beIhave  ,_ = backend.(BackendIHave)
+	s.beWildMat,_ = backend.(BackendListWildMat)
 }
 
 // The Server handle.
@@ -654,8 +670,14 @@ func handleList(args []string, s *session, c *textproto.Conn) error {
 		e := wildmat.Compile()
 		if e!=nil { return ErrSyntax }
 	}
+	var err error
+	var groups <-chan *nntp.Group
 	
-	groups, err := s.backend.ListGroups()
+	if wildmat!=nil && s.beWildMat!=nil {
+		groups, err = s.beWildMat.ListGroupsWildMat(wildmat)
+	}else{
+		groups, err = s.backend.ListGroups()
+	}
 	if err != nil {
 		return err
 	}
