@@ -159,7 +159,7 @@ type BackendIHave interface {
 	//
 	// If BackendIHave is not provided, the server will use the Post-method with
 	// any ErrPostingFailed-result being replaced by ErrIHaveFailed automatically.
-	IHave(article *nntp.Article) error
+	IHave(id string,article *nntp.Article) error
 
 	// This method will tell the server frontent, and thus, the client, wether the server should
 	// accept the Article or not.
@@ -1076,6 +1076,9 @@ func handlePost(args []string, s *session, c *textproto.Conn) error {
 
 */
 func handleIHave(args []string, s *session, c *textproto.Conn) error {
+	if len(args)<1 {
+		return ErrSyntax
+	}
 	if !s.backend.AllowPost() {
 		return ErrNotWanted
 	}
@@ -1119,7 +1122,7 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 		return ErrIHaveFailed
 	}
 	article.Body = c.DotReader()
-	err = s.beIhave.IHave(article)
+	err = s.beIhave.IHave(args[0],article)
 	if err != nil {
 		return err
 	}
