@@ -89,7 +89,13 @@ var ErrPostingFailed = &NNTPError{441, "posting failed"}
 // rejected due the server not wanting the article.
 var ErrNotWanted = &NNTPError{435, "Article not wanted"}
 
-// ErrIHaveFailed is returned when an attempt to ihave an article fails.
+// ErrIHaveNopPossible is the same as ErrIHaveFailed, except the text.
+// ErrIHaveNopPossible is returned when an attempt to ihave an article fails
+// BEFORE the transfer of the article.
+var ErrIHaveNotPossible = &NNTPError{436, "Transfer not possible; try again later"}
+
+// ErrIHaveFailed is returned when an attempt to ihave an article fails
+// AFTER the transfer of the article.
 var ErrIHaveFailed = &NNTPError{436, "Transfer failed; try again later"}
 
 // ErrIHaveRejected is returned when an attempt to ihave an article is
@@ -137,6 +143,32 @@ type Backend interface {
 	Post(article *nntp.Article) error
 }
 
+// An optional Interface Backend-objects may provide.
+//
+// This interface provides functions used in the IHAVE command.
+// If this interface is not provided by a backend, the server falls back to
+// similar functions from the required core interface.
+type BackendIHave interface {
+	// This method is like the Post(article *nntp.Article)-method except that it is executed
+	// on the IHAVE command instead of on the POST command. IHave is required to return
+	// ErrIHaveFailed or ErrIHaveRejected instead of the ErrPostingFailed error (otherwise
+	// the server will missbehave)
+	//
+	// If BackendIHave is not provided, the server will use the Post-method with
+	// any ErrPostingFailed-result being replaced by ErrIHaveFailed automatically.
+	IHave(article *nntp.Article) error
+
+	// This method will tell the server frontent, and thus, the client, wether the server should
+	// accept the Article or not.
+	// If the article is wanted and should be transfered, nil should be returned.
+	// If it is clear, IHAVE would reject, ErrNotWanted should be returned.
+	// If it is clear, IHAVE would fail, ErrIHaveNotPossible should be returned.
+	// 
+	// If BackendIHave is not provided, the server will use the method
+	// GetArticleWithNoGroup-method to determine.
+	IHaveWantArticle(id string) error
+}
+
 type IdGenerator interface {
 	GenID() string
 }
@@ -147,6 +179,11 @@ type session struct {
 	idGenerator IdGenerator
 	group       *nntp.Group
 	number		int64
+	beIhave     BackendIHave
+}
+func (s *session) setBackend(backend Backend){
+	s.backend   = backend
+	s.beIhave,_ = backend.(BackendIHave)
 }
 
 // The Server handle.
@@ -223,11 +260,11 @@ func (s *Server) Process(tc net.Conn) {
 
 	sess := &session{
 		server:      s,
-		backend:     backend,
 		idGenerator: s.IdGenerator,
 		group:       nil,
 		number:      0,
 	}
+	sess.setBackend(backend)
 
 	c.PrintfLine("200 Hello!")
 	for {
@@ -872,10 +909,13 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	if !s.backend.AllowPost() {
 		return ErrNotWanted
 	}
+	var article *nntp.Article
+	var err error
+
+	if s.beIhave!=nil { goto way_use_beIhave }
 
 	// See if we have it.
-	// TODO: special method?
-	article, err := s.backend.GetArticleWithNoGroup(args[0])
+	article, err = s.backend.GetArticleWithNoGroup(args[0])
 	if article != nil {
 		return ErrNotWanted
 	}
@@ -892,8 +932,28 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 		if err==ErrPostingFailed { err = ErrIHaveFailed }
 		return err
 	}
-	c.PrintfLine("235 article received OK")
-	return nil
+	return c.PrintfLine("235 article received OK")
+	
+	way_use_beIhave:
+	
+	// See if we have it.
+	err = s.beIhave.IHaveWantArticle(args[0])
+	if err != nil {
+		return err
+	}
+
+	c.PrintfLine("335 send it")
+	article = &nntp.Article{}
+	article.Header, err = c.ReadMIMEHeader()
+	if err != nil {
+		return ErrIHaveFailed
+	}
+	article.Body = c.DotReader()
+	err = s.beIhave.IHave(article)
+	if err != nil {
+		return err
+	}
+	return c.PrintfLine("235 article received OK")
 }
 
 
@@ -1010,7 +1070,7 @@ func handleAuthInfo(args []string, s *session, c *textproto.Conn) error {
 	if err == nil {
 		c.PrintfLine("250 authenticated")
 		if b != nil {
-			s.backend = b
+			s.setBackend(b)
 		}
 	}
 	return err
