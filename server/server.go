@@ -38,7 +38,6 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
-	"net"
 	"net/textproto"
 	"strconv"
 	"strings"
@@ -255,7 +254,7 @@ func (s *session) dispatchCommand(cmd string, args []string,
 }
 
 // Process an NNTP session.
-func (s *Server) Process(tc net.Conn) {
+func (s *Server) Process(tc io.ReadWriteCloser) {
 	defer tc.Close()
 	c := textproto.NewConn(tc)
 	
