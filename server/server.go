@@ -220,6 +220,8 @@ func NewServer(backend Backend,idGenerator IdGenerator) *Server {
 	rv.Handlers["newgroups"] = handleNewGroups
 	rv.Handlers["over"] = handleOver
 	rv.Handlers["xover"] = handleOver
+	rv.Handlers["hdr"] = handleHdr
+	rv.Handlers["xhdr"] = handleHdr
 	rv.Handlers["listgroup"] = handleListgroup
 	rv.Handlers["last"] = handleLast
 	rv.Handlers["next"] = handleNext
@@ -377,6 +379,34 @@ func handleListgroup(args []string, s *session, c *textproto.Conn) error {
 
 
 /*
+Indicating capability: OVER
+
+   Syntax
+     OVER message-id
+     OVER range
+     OVER
+
+   Responses
+
+   First form (message-id specified)
+     224    Overview information follows (multi-line)
+     430    No article with that message-id
+
+   Second form (range specified)
+     224    Overview information follows (multi-line)
+     412    No newsgroup selected
+     423    No articles in that range
+
+   Third form (current article number used)
+     224    Overview information follows (multi-line)
+     412    No newsgroup selected
+     420    Current article number is invalid
+
+   Parameters
+     range         Number(s) of articles
+     message-id    Message-id of article
+*/
+/*
    "0" or article number (see below)
    Subject header content
    From header content
@@ -386,13 +416,33 @@ func handleListgroup(args []string, s *session, c *textproto.Conn) error {
    :bytes metadata item
    :lines metadata item
 */
-
 func handleOver(args []string, s *session, c *textproto.Conn) error {
-	if s.group == nil {
-		return ErrNoGroupSelected
-	}
 	arg0 := ""
 	if len(args)>0 {arg0 = args[0]}
+	single,nogroup := analiyzeArticleID(arg0)
+	if s.group == nil && !nogroup {
+		return ErrNoGroupSelected
+	}
+	if single {
+		var a *nntp.Article
+		var e error
+		if nogroup{
+			a,e = s.backend.GetArticleWithNoGroup(arg0)
+		}else{
+			a,e = s.backend.GetArticle(s.group,arg0)
+		}
+		if e!=nil { return e }
+		dw := c.DotWriter()
+		defer dw.Close()
+		fmt.Fprintf(dw, "%d\t%s\t%s\t%s\t%s\t%s\t%d\t%d\n", 0,
+			a.Header.Get("Subject"),
+			a.Header.Get("From"),
+			a.Header.Get("Date"),
+			a.Header.Get("Message-Id"),
+			a.Header.Get("References"),
+			a.Bytes, a.Lines)
+		return nil
+	}
 	from, to := parseRange(arg0)
 	articles, err := s.backend.GetArticles(s.group, from, to)
 	if err != nil {
@@ -438,6 +488,94 @@ func handleListOverviewFmt(dw io.Writer, c *textproto.Conn) error {
     
 	return nil
 }
+
+/*
+
+   Indicating capability: HDR
+
+   Syntax
+     HDR field message-id
+     HDR field range
+     HDR field
+
+   Responses
+
+   First form (message-id specified)
+     225    Headers follow (multi-line)
+     430    No article with that message-id
+
+   Second form (range specified)
+     225    Headers follow (multi-line)
+     412    No newsgroup selected
+     423    No articles in that range
+
+   Third form (current article number used)
+     225    Headers follow (multi-line)
+     412    No newsgroup selected
+     420    Current article number is invalid
+
+   Parameters
+     field         Name of field
+     range         Number(s) of articles
+     message-id    Message-id of article
+*/
+func handleHdr(args []string, s *session, c *textproto.Conn) error {
+	arg0 := ""
+	arg1 := ""
+	if len(args)>0 {arg0 = args[0]}
+	if len(args)>1 {arg1 = args[1]}
+	single,nogroup := analiyzeArticleID(arg1)
+	if s.group == nil && !nogroup {
+		return ErrNoGroupSelected
+	}
+	if single {
+		var a *nntp.Article
+		var e error
+		if nogroup{
+			a,e = s.backend.GetArticleWithNoGroup(arg1)
+		}else{
+			a,e = s.backend.GetArticle(s.group,arg1)
+		}
+		if e!=nil { return e }
+		dw := c.DotWriter()
+		defer dw.Close()
+		switch arg0{
+		case ":bytes":
+			fmt.Fprintf(dw, "%d\t%d\n", 0, a.Bytes)
+		case ":lines":
+			fmt.Fprintf(dw, "%d\t%d\n", 0, a.Lines)
+		default:
+			fmt.Fprintf(dw, "%d\t%s\n", 0, a.Header.Get(arg0))
+		}
+		return nil
+	}
+
+	from, to := parseRange(arg1)
+	articles, err := s.backend.GetArticles(s.group, from, to)
+	if err != nil {
+		return err
+	}
+	c.PrintfLine("224 here it comes")
+	dw := c.DotWriter()
+	defer dw.Close()
+	switch arg0{
+	case ":bytes":
+		for a := range articles {
+			fmt.Fprintf(dw, "%d\t%d\n", a.Num,a.Article.Bytes)
+		}
+	case ":lines":
+		for a := range articles {
+			fmt.Fprintf(dw, "%d\t%d\n", a.Num,a.Article.Lines)
+		}
+	default:
+		for a := range articles {
+			fmt.Fprintf(dw, "%d\t%s\n", a.Num,
+				a.Article.Header.Get(arg0))
+		}
+	}
+	return nil
+}
+
 
 /*
    Indicating capability: LIST

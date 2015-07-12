@@ -4,6 +4,13 @@ import "strconv"
 import "strings"
 import "net/textproto"
 
+func analiyzeArticleID(id string) (single bool,nogroup bool) {
+	if len(id)==0 { return false,false }
+	if id[0]=='<' { return true,true }
+	if strings.Index(id,"-")<0 { return true,false }
+	return false,false
+}
+
 func articleIDOrNumber(id string) (int64,bool) {
 	for len(id)>1 && id[0]=='0' {
 		id = id[1:]
