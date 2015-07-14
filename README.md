@@ -1,3 +1,4 @@
+[![GoDoc](https://godoc.org/github.com/maxymania/go-nntp?status.svg)](https://godoc.org/github.com/maxymania/go-nntp)
 # go-nntp
 NNTP ~~client and~~ server for the go language. Based/Extended from https://github.com/dustin/go-nntp
 
